@@ -162,7 +162,7 @@ def version_to_lock_entry(version_data: dict) -> dict:
 
 
 def import_modpack(
-    slug: str, minecraft: str | None
+    slug: str, minecraft: str | None, include_client_only: bool = False
 ) -> tuple[str, str, dict[str, str], dict[str, dict]]:
     """
     Fetch a modpack from Modrinth and extract its mod list.
@@ -216,15 +216,17 @@ def import_modpack(
     project_ids = [d["project_id"] for d in deps if d.get("project_id")]
     version_ids = [d["version_id"] for d in deps if d.get("version_id")]
 
-    # Bulk-fetch project info to get slugs and types
+    # Bulk-fetch project info to get slugs, types, and side compatibility
     id_to_slug: dict[str, str] = {}
     id_to_type: dict[str, str] = {}
+    id_to_server_side: dict[str, str] = {}
     if project_ids:
         # API accepts up to ~200 IDs at once
         projects = api_get("/projects", {"ids": json.dumps(project_ids)})
         for p in projects:
             id_to_slug[p["id"]] = p["slug"]
             id_to_type[p["id"]] = p["project_type"]
+            id_to_server_side[p["id"]] = p.get("server_side", "unknown")
 
     # Bulk-fetch full version data (includes files, hashes, URLs)
     version_id_to_data: dict[str, dict] = {}
@@ -236,7 +238,8 @@ def import_modpack(
     # Build the mod list and lock entries, filtering to only actual mods
     mods: dict[str, str] = {}
     lock: dict[str, dict] = {}
-    skipped: list[str] = []
+    skipped_non_mod: list[str] = []
+    skipped_client_only: list[str] = []
     for dep in deps:
         pid = dep.get("project_id")
         vid = dep.get("version_id")
@@ -245,12 +248,17 @@ def import_modpack(
 
         mod_slug = id_to_slug.get(pid)
         project_type = id_to_type.get(pid, "unknown")
+        server_side = id_to_server_side.get(pid, "unknown")
 
         if not mod_slug:
             continue
 
         if project_type != "mod":
-            skipped.append(f"{mod_slug} ({project_type})")
+            skipped_non_mod.append(f"{mod_slug} ({project_type})")
+            continue
+
+        if not include_client_only and server_side == "unsupported":
+            skipped_client_only.append(mod_slug)
             continue
 
         version_data = version_id_to_data.get(vid) if vid else None
@@ -260,8 +268,17 @@ def import_modpack(
         else:
             mods[mod_slug] = "*"
 
-    if skipped:
-        print(f"  Skipped {len(skipped)} non-mod dependencies: {', '.join(skipped)}")
+    if skipped_non_mod:
+        print(
+            f"  Skipped {len(skipped_non_mod)} non-mod dependencies: "
+            f"{', '.join(skipped_non_mod)}"
+        )
+
+    if skipped_client_only:
+        print(
+            f"  Skipped {len(skipped_client_only)} client-only mods: "
+            f"{', '.join(skipped_client_only)}"
+        )
 
     print(f"  Found {len(mods)} mods")
 
@@ -364,9 +381,19 @@ def cmd_update(manifest_path: Path, lock_path: Path):
     print(f"\nWrote {lock_path} with {len(lock)} mod(s).")
 
 
-def cmd_import(modpack_slug: str, minecraft: str | None, manifest_path: Path, lock_path: Path):
+def cmd_import(
+    modpack_slug: str,
+    minecraft: str | None,
+    include_client_only: bool,
+    manifest_path: Path,
+    lock_path: Path,
+):
     """Import a Modrinth modpack into a manifest and write the lock file."""
-    mc_version, loader, mods, lock = import_modpack(modpack_slug, minecraft)
+    mc_version, loader, mods, lock = import_modpack(
+        modpack_slug,
+        minecraft,
+        include_client_only=include_client_only,
+    )
 
     if not mods:
         print("No mods to write.", file=sys.stderr)
@@ -426,14 +453,27 @@ def main():
         help="Minecraft version to target when importing a modpack "
         "(default: latest version the modpack supports)",
     )
+    parser.add_argument(
+        "--include-client-only",
+        action="store_true",
+        help="Include mods whose Modrinth metadata marks them as unsupported on servers",
+    )
 
     args = parser.parse_args()
 
     if args.import_modpack:
-        cmd_import(args.import_modpack, args.minecraft, args.manifest, args.lock)
+        cmd_import(
+            args.import_modpack,
+            args.minecraft,
+            args.include_client_only,
+            args.manifest,
+            args.lock,
+        )
     else:
-        if args.minecraft:
-            parser.error("--minecraft can only be used with --import-modpack")
+        if args.minecraft or args.include_client_only:
+            parser.error(
+                "--minecraft and --include-client-only can only be used with --import-modpack"
+            )
         cmd_update(args.manifest, args.lock)
 
 
