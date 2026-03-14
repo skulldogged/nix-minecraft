@@ -1,0 +1,18 @@
+{
+  "fabric-api": {
+    "version": "0.116.9+1.21.1",
+    "versionId": "yGAe1owa",
+    "projectId": "P7dR8mSH",
+    "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/yGAe1owa/fabric-api-0.116.9%2B1.21.1.jar",
+    "hash": "sha512-5kOHYHm5UK75qtPu6NJwRjBYlejQ9ZX3+VAQg5reqiXFWm3IYkzPuhIBGU1lmPy8EfI6elU8zvu4wM6s84i7eQ==",
+    "filename": "fabric-api-0.116.9+1.21.1.jar"
+  },
+  "vanilla-backpacks": {
+    "version": "1.3.5",
+    "versionId": "uJz7ESID",
+    "projectId": "MGcd6kTf",
+    "url": "https://cdn.modrinth.com/data/MGcd6kTf/versions/uJz7ESID/1.3.5-backpacks_mod-1.21-1.21.1.jar",
+    "hash": "sha512-Yrz3rH3c2ifC3FgVk8+Yh8VnAn4GGq1ySmhPgaUj8E5vba38vLz++B1j38Emfb6n1P726T2PXJcEmVSy9Dgngg==",
+    "filename": "1.3.5-backpacks_mod-1.21-1.21.1.jar"
+  }
+}
