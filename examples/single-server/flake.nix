@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/release-24.11";
-    nix-minecraft.url = "github:Infinidoge/nix-minecraft";
+    nix-minecraft.url = "github:skulldogged/nix-minecraft";
   };
 
   outputs =

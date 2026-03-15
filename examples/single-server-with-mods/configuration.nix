@@ -21,7 +21,7 @@
 
       symlinks = {
         # Mods are declared in mods.toml and resolved into mods.lock.json
-        # by running: nix run github:Infinidoge/nix-minecraft#update-modrinth-mods
+        # by running: nix run github:skulldogged/nix-minecraft#modrinth-mods
         mods = pkgs.fetchModrinthMods ./mods.lock.json;
       };
     };

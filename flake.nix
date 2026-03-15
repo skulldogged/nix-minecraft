@@ -86,7 +86,7 @@
             velocity-server
             minecraft-server
             nix-modrinth-prefetch
-            update-modrinth-mods
+            modrinth-mods
             neoforge-server
             ;
 
