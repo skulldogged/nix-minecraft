@@ -36,6 +36,7 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
@@ -47,6 +48,14 @@ JSONDict = dict[str, Any]
 PROJECT_CACHE: dict[str, JSONDict] = {}
 VERSION_CACHE: dict[str, JSONDict] = {}
 VERSION_LIST_CACHE: dict[tuple[str, str, str], list[JSONDict]] = {}
+
+LOADER_DEPENDENCY_KEYS = {
+    "fabric": "fabric-loader",
+    "legacy-fabric": "fabric-loader",
+    "quilt": "quilt-loader",
+    "forge": "forge",
+    "neoforge": "neoforge",
+}
 
 
 def fatal(message: str) -> NoReturn:
@@ -165,6 +174,22 @@ def lock_entry_from_version(version_data: JSONDict) -> JSONDict:
     }
 
 
+def find_version_file(version_data: JSONDict, lock_entry: JSONDict | None = None) -> JSONDict:
+    files = cast(list[JSONDict], version_data["files"])
+    if lock_entry is not None:
+        for file in files:
+            if file.get("filename") == lock_entry.get("filename"):
+                return file
+        for file in files:
+            if file.get("url") == lock_entry.get("url"):
+                return file
+
+    primary = next((file for file in files if file["primary"]), None)
+    if primary is None:
+        fatal(f"Version {version_data['id']} does not contain any downloadable files.")
+    return primary
+
+
 def select_version(versions: list[JSONDict], project_ref: str, version_constraint: str) -> JSONDict:
     if not versions:
         fatal(f"No compatible versions found for '{project_ref}'.")
@@ -271,7 +296,9 @@ def prompt_yes_no(question: str, default: bool = False) -> bool:
 
 
 def dependency_constraint(version_data: JSONDict | None) -> str:
-    return "*"
+    if version_data is None:
+        return "*"
+    return str(version_data["version_number"])
 
 
 def maybe_add_mod(
@@ -293,11 +320,15 @@ def maybe_add_mod(
 
     existing = planned.get(slug)
     if existing is not None:
-        if existing["constraint"] == "*" or existing["constraint"] == constraint:
+        if existing["constraint"] == constraint:
             return False
-        if constraint == "*":
-            existing["constraint"] = "*"
-            existing["version_data"] = version_data
+        if existing["constraint"] != version_data["version_number"]:
+            print(
+                f"  Keeping existing planned version for {slug} ({existing['constraint']}) over {constraint}."
+            )
+            return False
+        existing["constraint"] = constraint
+        existing["version_data"] = version_data
         return False
 
     planned[slug] = {
@@ -346,6 +377,15 @@ def process_dependencies(
 
         if dependency_type == "optional" and project.get("server_side") == "unsupported":
             print(f"  Skipping optional client-only dependency {dependency_slug}.")
+            continue
+
+        if dependency_slug in manifest_mods:
+            if dependency_slug not in lock:
+                missing_lock.add(dependency_slug)
+            print(f"  Optional dependency {dependency_slug} already present; skipping prompt.")
+            continue
+
+        if dependency_slug in planned:
             continue
 
         if dependency_type == "optional":
@@ -397,8 +437,9 @@ def cmd_update(manifest_path: Path, lock_path: Path, requested_slugs: list[str])
         old_version = old_lock.get(slug, {}).get("version")
 
         print(f"  Resolving {slug} ({constraint})...", end=" ", flush=True)
-        version_data = resolve_version(slug, constraint, minecraft, loader)
+        version_data = resolve_version(slug, "*", minecraft, loader)
         lock[slug] = lock_entry_from_version(version_data)
+        manifest_mods[slug] = str(version_data["version_number"])
 
         new_version = lock[slug]["version"]
         if old_version and old_version != new_version:
@@ -408,7 +449,22 @@ def cmd_update(manifest_path: Path, lock_path: Path, requested_slugs: list[str])
         else:
             print(new_version)
 
+    for slug in sorted(manifest_mods):
+        if slug in lock:
+            continue
+        if slug in old_lock:
+            lock[slug] = old_lock[slug]
+            continue
+
+        constraint = manifest_mods[slug]
+        print(f"  Resolving missing lock entry for {slug} ({constraint})...", end=" ", flush=True)
+        version_data = resolve_version(slug, constraint, minecraft, loader)
+        lock[slug] = lock_entry_from_version(version_data)
+        print(lock[slug]["version"])
+
+    write_manifest(manifest_path, minecraft, loader, manifest_mods)
     write_lock(lock_path, lock)
+    print(f"\nWrote {manifest_path} with {len(manifest_mods)} mod(s).")
     print(f"\nWrote {lock_path} with {len(lock)} mod(s).")
 
 
@@ -437,7 +493,7 @@ def cmd_add(manifest_path: Path, lock_path: Path, requested_slugs: list[str]):
         version_data = resolve_version(slug, "*", minecraft, loader)
         maybe_add_mod(
             slug,
-            "*",
+            str(version_data["version_number"]),
             version_data,
             "requested mod",
             planned,
@@ -615,9 +671,6 @@ def cmd_import(
     if not mods:
         fatal("No mods to write.")
 
-    write_manifest(manifest_path, mc_version, loader, mods)
-    print(f"\nWrote {manifest_path} with {len(mods)} mods for Minecraft {mc_version} ({loader}).")
-
     unresolved = [slug for slug in mods if slug not in lock]
     if unresolved:
         print(f"\nResolving {len(unresolved)} mod(s) without pinned versions...")
@@ -625,11 +678,116 @@ def cmd_import(
             constraint = mods[slug]
             print(f"  Resolving {slug} ({constraint})...", end=" ", flush=True)
             version_data = resolve_version(slug, constraint, mc_version, loader)
+            mods[slug] = str(version_data["version_number"])
             lock[slug] = lock_entry_from_version(version_data)
             print(version_data["version_number"])
 
+    write_manifest(manifest_path, mc_version, loader, mods)
+    print(f"\nWrote {manifest_path} with {len(mods)} mods for Minecraft {mc_version} ({loader}).")
     write_lock(lock_path, lock)
     print(f"\nWrote {lock_path} with {len(lock)} mod(s).")
+
+
+def mrpack_dependencies(minecraft: str, loader: str, loader_version: str | None) -> dict[str, str]:
+    dependencies = {"minecraft": minecraft}
+    dependency_key = LOADER_DEPENDENCY_KEYS.get(loader)
+    if dependency_key is None:
+        fatal(f"Unsupported loader '{loader}' for mrpack export.")
+
+    if loader_version is None:
+        print(
+            f"Warning: no --loader-version provided; omitting {dependency_key} from mrpack dependencies.",
+            file=sys.stderr,
+        )
+        return dependencies
+
+    dependencies[dependency_key] = loader_version
+    return dependencies
+
+
+def build_mrpack_index(
+    minecraft: str,
+    loader: str,
+    loader_version: str | None,
+    lock: dict[str, JSONDict],
+    name: str,
+    version_id: str,
+    summary: str | None,
+) -> JSONDict:
+    files: list[JSONDict] = []
+    for slug in sorted(lock):
+        lock_entry = lock[slug]
+        version_data = fetch_version(str(lock_entry["versionId"]))
+        project = fetch_project(str(lock_entry["projectId"]))
+        version_file = find_version_file(version_data, lock_entry)
+        hashes = expect_dict(version_file["hashes"], f"file hashes for {slug}")
+
+        file_entry: JSONDict = {
+            "path": f"mods/{lock_entry['filename']}",
+            "hashes": {
+                "sha1": hashes["sha1"],
+                "sha512": hashes["sha512"],
+            },
+            "downloads": [lock_entry["url"]],
+            "fileSize": version_file["size"],
+        }
+
+        client_side = project.get("client_side")
+        server_side = project.get("server_side")
+        if client_side is not None or server_side is not None:
+            file_entry["env"] = {
+                "client": client_side or "unknown",
+                "server": server_side or "unknown",
+            }
+
+        files.append(file_entry)
+
+    index: JSONDict = {
+        "formatVersion": 1,
+        "game": "minecraft",
+        "versionId": version_id,
+        "name": name,
+        "files": files,
+        "dependencies": mrpack_dependencies(minecraft, loader, loader_version),
+    }
+    if summary:
+        index["summary"] = summary
+    return index
+
+
+def cmd_export_mrpack(
+    manifest_path: Path,
+    lock_path: Path,
+    output_path: Path,
+    name: str | None,
+    version_id: str,
+    summary: str | None,
+    loader_version: str | None,
+):
+    minecraft, loader, manifest_mods = read_manifest(manifest_path)
+    lock = read_lock(lock_path)
+
+    missing = sorted(slug for slug in manifest_mods if slug not in lock)
+    if missing:
+        fatal(
+            f"Lock file is missing entries for: {', '.join(missing)}. Run `modrinth-mods update` first."
+        )
+
+    pack_name = name or output_path.stem
+    index = build_mrpack_index(
+        minecraft,
+        loader,
+        loader_version,
+        lock,
+        pack_name,
+        version_id,
+        summary,
+    )
+
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("modrinth.index.json", json.dumps(index, indent=2) + "\n")
+
+    print(f"Wrote {output_path} with {len(lock)} mod(s).")
 
 
 def preprocess_argv(argv: list[str]) -> list[str]:
@@ -639,7 +797,7 @@ def preprocess_argv(argv: list[str]) -> list[str]:
     if argv[0] in {"-h", "--help"}:
         return argv
 
-    command_names = {"update", "add", "import-modpack"}
+    command_names = {"update", "add", "import-modpack", "export-mrpack"}
 
     index = 0
     while index < len(argv):
@@ -692,6 +850,20 @@ def main():
         help="Path to the lock file (default: mods.lock.json)",
     )
 
+    subcommand_common_parser = argparse.ArgumentParser(add_help=False)
+    subcommand_common_parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Path to the mods manifest file (default: mods.toml)",
+    )
+    subcommand_common_parser.add_argument(
+        "--lock",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Path to the lock file (default: mods.lock.json)",
+    )
+
     parser = argparse.ArgumentParser(
         description="Manage Modrinth mods via a TOML manifest and JSON lock file.",
         parents=[common_parser],
@@ -702,7 +874,7 @@ def main():
     update_parser = subparsers.add_parser(
         "update",
         help="Update all mods or only the named mods.",
-        parents=[common_parser],
+        parents=[subcommand_common_parser],
     )
     update_parser.add_argument(
         "mods",
@@ -713,7 +885,7 @@ def main():
     add_parser = subparsers.add_parser(
         "add",
         help="Add mods to the manifest and lock file.",
-        parents=[common_parser],
+        parents=[subcommand_common_parser],
     )
     add_parser.add_argument(
         "mods",
@@ -724,7 +896,7 @@ def main():
     import_parser = subparsers.add_parser(
         "import-modpack",
         help="Import mods from a Modrinth modpack.",
-        parents=[common_parser],
+        parents=[subcommand_common_parser],
     )
     import_parser.add_argument(
         "modpack",
@@ -741,6 +913,35 @@ def main():
         help="Include mods marked unsupported on servers.",
     )
 
+    export_parser = subparsers.add_parser(
+        "export-mrpack",
+        help="Generate an mrpack from the manifest and lock file.",
+        parents=[subcommand_common_parser],
+    )
+    export_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("mods.mrpack"),
+        help="Path to the output mrpack file (default: mods.mrpack)",
+    )
+    export_parser.add_argument(
+        "--name",
+        help="Pack name stored in the mrpack (default: output filename stem)",
+    )
+    export_parser.add_argument(
+        "--version-id",
+        default="1.0.0",
+        help="Pack version identifier stored in the mrpack (default: 1.0.0)",
+    )
+    export_parser.add_argument(
+        "--summary",
+        help="Optional pack summary stored in the mrpack.",
+    )
+    export_parser.add_argument(
+        "--loader-version",
+        help="Optional loader version to include in mrpack dependencies.",
+    )
+
     args = parser.parse_args(preprocess_argv(sys.argv[1:]))
 
     if args.command == "add":
@@ -752,6 +953,16 @@ def main():
             args.include_client_only,
             args.manifest,
             args.lock,
+        )
+    elif args.command == "export-mrpack":
+        cmd_export_mrpack(
+            args.manifest,
+            args.lock,
+            args.output,
+            args.name,
+            args.version_id,
+            args.summary,
+            args.loader_version,
         )
     else:
         cmd_update(args.manifest, args.lock, getattr(args, "mods", []))

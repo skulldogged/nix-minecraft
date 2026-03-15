@@ -323,7 +323,7 @@ To add one or more mods by Modrinth slug or URL:
 nix run github:skulldogged/nix-minecraft#modrinth-mods -- add fabric-api https://modrinth.com/mod/lithium
 ```
 
-Required dependencies are added automatically. For optional dependencies, the tool asks whether to include them, except for mods marked client-only on Modrinth, which are skipped.
+Required dependencies are added automatically and all added mods are pinned to the resolved version in `mods.toml`. For optional dependencies, the tool asks whether to include them, except for mods marked client-only on Modrinth, which are skipped.
 
 #### Importing from a Modrinth modpack
 
@@ -343,9 +343,20 @@ nix run github:skulldogged/nix-minecraft#modrinth-mods -- \
   import-modpack fabulously-optimized --minecraft 1.21.1
 ```
 
-You can pass either the full Modrinth URL or just the modpack slug. After importing, the generated `mods.toml` is yours to edit - you can add, remove, or unpin mods as you see fit, then re-run `modrinth-mods update` to refresh the lock file.
+You can pass either the full Modrinth URL or just the modpack slug. After importing, the generated `mods.toml` is yours to edit - you can add, remove, or unpin mods as you see fit, then re-run `modrinth-mods update` to refresh the lock file. Updating also refreshes the pinned versions in `mods.toml` to match the newly selected releases.
 
 **Note**: Non-mod dependencies (resource packs, shader packs, etc.) are skipped during import, as they aren't JAR mods. The tool will list any skipped items.
+
+#### Exporting an mrpack
+
+You can generate a basic `.mrpack` from an existing `mods.toml` and `mods.lock.json`:
+
+```shell
+nix run github:skulldogged/nix-minecraft#modrinth-mods -- \
+  export-mrpack --output my-pack.mrpack --loader-version 0.16.10
+```
+
+This writes `modrinth.index.json` into the archive using the locked Modrinth download URLs and hashes. The loader version is optional, but Modrinth launchers generally expect it to be present in the pack dependencies.
 
 #### Adding non-Modrinth mods alongside
 
