@@ -347,16 +347,25 @@ You can pass either the full Modrinth URL or just the modpack slug. After import
 
 **Note**: Non-mod dependencies (resource packs, shader packs, etc.) are skipped during import, as they aren't JAR mods. The tool will list any skipped items.
 
+If you want later `.mrpack` exports to include the mod loader dependency, you can add a loader version to the manifest:
+
+```toml
+[options]
+minecraft = "1.21.1"
+loader = "fabric"
+loader-version = "0.18.4"
+```
+
 #### Exporting an mrpack
 
 You can generate a basic `.mrpack` from an existing `mods.toml` and `mods.lock.json`:
 
 ```shell
 nix run github:skulldogged/nix-minecraft#modrinth-mods -- \
-  export-mrpack --output my-pack.mrpack --loader-version 0.16.10
+  export-mrpack --output my-pack.mrpack --loader-version 0.18.4
 ```
 
-This writes `modrinth.index.json` into the archive using the locked Modrinth download URLs and hashes. The loader version is optional, but Modrinth launchers generally expect it to be present in the pack dependencies.
+This writes `modrinth.index.json` into the archive using the locked Modrinth download URLs and hashes. `export-mrpack` uses `--loader-version` when provided; otherwise it falls back to `[options].loader-version` from `mods.toml`. The loader version is still optional, but Modrinth launchers generally expect it to be present in the pack dependencies.
 
 #### Adding non-Modrinth mods alongside
 
